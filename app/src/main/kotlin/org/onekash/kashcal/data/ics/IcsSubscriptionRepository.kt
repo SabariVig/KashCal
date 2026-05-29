@@ -17,6 +17,7 @@ import org.onekash.kashcal.data.repository.AccountRepository
 import org.onekash.kashcal.domain.generator.OccurrenceGenerator
 import org.onekash.kashcal.domain.model.AccountProvider
 import org.onekash.kashcal.domain.reader.EventReader
+import org.onekash.kashcal.domain.sync.PulledEventMirror
 import org.onekash.kashcal.reminder.scheduler.ReminderScheduler
 import org.onekash.kashcal.util.maskUid
 import javax.inject.Inject
@@ -70,7 +71,8 @@ class IcsSubscriptionRepository @Inject constructor(
     private val occurrenceGenerator: OccurrenceGenerator,
     private val icsFetcher: IcsFetcher,
     private val reminderScheduler: ReminderScheduler,
-    private val eventReader: EventReader
+    private val eventReader: EventReader,
+    private val pulledEventMirror: PulledEventMirror = PulledEventMirror.NoOp
 ) {
 
     // ========== Subscription Management ==========
@@ -264,6 +266,12 @@ class IcsSubscriptionRepository @Inject constructor(
 
             when (fetchResult) {
                 is FetchResult.NotModified -> {
+                    val sourceEvents = eventsDao.getByCalendarIdAndCaldavUrlPrefix(
+                        calendarId = subscription.calendarId,
+                        urlPrefix = IcsSubscription.eventSourcePrefix(subscriptionId)
+                    )
+                    pulledEventMirror.mirrorPulledEvents(sourceEvents)
+
                     // Content unchanged, update last sync time
                     icsSubscriptionsDao.updateSyncSuccess(
                         id = subscriptionId,
@@ -304,6 +312,13 @@ class IcsSubscriptionRepository @Inject constructor(
                         subscriptionId = subscriptionId,
                         calendarColor = calendar?.color ?: subscription.color
                     )
+
+                    pulledEventMirror.deleteMirrorsForEvents(syncCount.deletedEvents)
+                    val sourceEvents = eventsDao.getByCalendarIdAndCaldavUrlPrefix(
+                        calendarId = subscription.calendarId,
+                        urlPrefix = IcsSubscription.eventSourcePrefix(subscriptionId)
+                    )
+                    pulledEventMirror.mirrorPulledEvents(sourceEvents)
 
                     // Update subscription sync status
                     icsSubscriptionsDao.updateSyncSuccess(
@@ -444,6 +459,7 @@ class IcsSubscriptionRepository @Inject constructor(
         var added = 0
         var updated = 0
         var deleted = 0
+        val deletedEvents = mutableListOf<Event>()
 
         // Pre-pass: disambiguate duplicate-UID masters before they enter
         // the transaction. Google's private ICS export sometimes emits two
@@ -488,6 +504,7 @@ class IcsSubscriptionRepository @Inject constructor(
                 val existingEvent = existingByImportId[importId] ?: continue
                 reminderScheduler.cancelRemindersForEvent(existingEvent.id)
                 eventsDao.deleteById(existingEvent.id)
+                deletedEvents.add(existingEvent)
                 existingByImportId.remove(importId)
                 deleted++
             }
@@ -594,7 +611,12 @@ class IcsSubscriptionRepository @Inject constructor(
             }
         }
 
-        return SyncCount(added, updated, deleted)
+        return SyncCount(
+            added = added,
+            updated = updated,
+            deleted = deleted,
+            deletedEvents = deletedEvents
+        )
     }
 
     /**
@@ -875,7 +897,8 @@ class IcsSubscriptionRepository @Inject constructor(
     data class SyncCount(
         val added: Int,
         val updated: Int,
-        val deleted: Int
+        val deleted: Int,
+        val deletedEvents: List<Event> = emptyList()
     )
 
     private sealed class FetchResult {
