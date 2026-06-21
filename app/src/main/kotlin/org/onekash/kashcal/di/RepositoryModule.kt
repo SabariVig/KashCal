@@ -12,6 +12,8 @@ import org.onekash.kashcal.data.repository.AccountRepository
 import org.onekash.kashcal.data.repository.AccountRepositoryImpl
 import org.onekash.kashcal.data.repository.CalendarRepository
 import org.onekash.kashcal.data.repository.CalendarRepositoryImpl
+import org.onekash.kashcal.domain.sync.DeviceCalendarMirrorService
+import org.onekash.kashcal.domain.sync.PulledEventMirror
 import javax.inject.Singleton
 
 /**
@@ -55,4 +57,10 @@ abstract class RepositoryModule {
     abstract fun bindCalendarProviderRepository(
         impl: AndroidCalendarProviderRepository
     ): CalendarProviderRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindPulledEventMirror(
+        impl: DeviceCalendarMirrorService
+    ): PulledEventMirror
 }

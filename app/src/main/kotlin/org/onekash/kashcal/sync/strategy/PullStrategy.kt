@@ -23,6 +23,8 @@ import org.onekash.kashcal.data.preferences.KashCalDataStore
 import org.onekash.kashcal.data.repository.CalendarRepository
 import org.onekash.kashcal.domain.generator.OccurrenceGenerator
 import org.onekash.kashcal.domain.identity.matchesAttendee
+import org.onekash.kashcal.domain.sync.MIRRORED_DEVICE_EVENT_ID_EXTRA_KEY
+import org.onekash.kashcal.domain.sync.PulledEventMirror
 import org.onekash.kashcal.sync.client.CalDavClient
 import org.onekash.kashcal.sync.client.model.CalDavEvent
 import org.onekash.kashcal.sync.client.model.CalDavResult
@@ -125,7 +127,8 @@ class PullStrategy @Inject constructor(
     private val dataStore: KashCalDataStore,
     private val inviteNotifier: org.onekash.kashcal.sync.notification.InviteNotifier,
     private val accountRepository: org.onekash.kashcal.data.repository.AccountRepository,
-    private val reminderScheduler: org.onekash.kashcal.reminder.scheduler.ReminderScheduler
+    private val reminderScheduler: org.onekash.kashcal.reminder.scheduler.ReminderScheduler,
+    private val pulledEventMirror: PulledEventMirror = PulledEventMirror.NoOp
 ) {
     // icaldav parser instance
     private val icalParser = ICalParser()
@@ -161,6 +164,12 @@ class PullStrategy @Inject constructor(
             originalSyncId = null, calendarId = 0, uid = "",
             createdAt = 0, updatedAt = 0, localModifiedAt = null,
             serverModifiedAt = null, lastSyncError = null, syncRetryCount = 0
+        ).let { stripped ->
+            stripped.copy(
+                extraProperties = stripped.extraProperties
+                    ?.filterKeys { it != MIRRORED_DEVICE_EVENT_ID_EXTRA_KEY }
+                    ?.takeIf { it.isNotEmpty() }
+            )
         )
 
         // Sync window: 1 year back, unlimited future (far-future date for CalDAV spec compliance)
@@ -300,6 +309,7 @@ class PullStrategy @Inject constructor(
             Log.d(TAG, "ctag check: server=$serverCtag, local=${calendar.ctag}, force=$forceFullSync")
             if (!forceFullSync && serverCtag == calendar.ctag && calendar.ctag != null) {
                 Log.d(TAG, "No changes (ctag unchanged)")
+                mirrorSyncedCalendarEvents(calendar.id)
                 return PullResult.NoChanges
             }
 
@@ -319,6 +329,7 @@ class PullStrategy @Inject constructor(
                     syncToken = result.newSyncToken ?: calendar.syncToken,
                     ctag = result.newCtag ?: serverCtag
                 )
+                mirrorSyncedCalendarEvents(calendar.id)
             }
 
             result
@@ -420,6 +431,7 @@ class PullStrategy @Inject constructor(
                     calendarColor = calendar.color
                 ))
                 eventsDao.deleteById(event.id)
+                pulledEventMirror.deleteMirrorForEvent(event)
                 deleted++
             }
         }
@@ -646,6 +658,7 @@ class PullStrategy @Inject constructor(
                     calendarColor = calendar.color
                 ))
                 eventsDao.deleteById(event.id)
+                pulledEventMirror.deleteMirrorForEvent(event)
                 deleted++
             }
         }
@@ -824,6 +837,7 @@ class PullStrategy @Inject constructor(
                     calendarColor = calendar.color
                 ))
                 eventsDao.deleteById(event.id)
+                pulledEventMirror.deleteMirrorForEvent(event)
                 deleted++
             }
         }
@@ -896,6 +910,13 @@ class PullStrategy @Inject constructor(
         val updated: Int,
         val changes: List<SyncChange>
     )
+
+    private suspend fun mirrorSyncedCalendarEvents(calendarId: Long) {
+        val events = eventsDao.getByCalendarId(calendarId)
+            .first()
+            .filter { it.syncStatus == SyncStatus.SYNCED }
+        pulledEventMirror.mirrorPulledEvents(events)
+    }
 
     /**
      * Cancel armed alarms when a server pull brings a fresh self-decline
